@@ -1,10 +1,10 @@
 package pa;
 
+import javax.microedition.lcdui.Canvas;
 import javax.microedition.lcdui.Font;
-import javax.microedition.lcdui.GameCanvas;
 import javax.microedition.lcdui.Graphics;
 
-public class Game extends GameCanvas implements Runnable {
+public class Game extends Canvas implements Runnable {
     static final int ST_MENU = 0, ST_WAIT = 1, ST_DISC = 2, ST_GAME = 4;
     static final int K_UP = 1, K_DOWN = 2, K_LEFT = 4, K_RIGHT = 8, K_FIRE = 16, K_SL = 32, K_SR = 64;
 
@@ -37,7 +37,7 @@ public class Game extends GameCanvas implements Runnable {
     static final int SPAWN_X2 = 20 * 256, SPAWN_Y2 = 20 * 256;  // client
 
     public Game(PA app) {
-        super(false);
+        super();
         this.app = app;
         setFullScreenMode(true);
         net = new Net();
@@ -48,10 +48,10 @@ public class Game extends GameCanvas implements Runnable {
             long t0 = System.currentTimeMillis();
             try {
                 update();
-                paint();
             } catch (Throwable e) {
                 status = "ERR " + e.toString();
             }
+            repaint();
             long dt = System.currentTimeMillis() - t0;
             if (dt < 30) {
                 try { Thread.sleep(30 - dt); } catch (InterruptedException e) { }
@@ -244,8 +244,7 @@ public class Game extends GameCanvas implements Runnable {
     }
 
     // ---------- paint ----------
-    void paint() {
-        Graphics g = getGraphics();
+    protected void paint(Graphics g) {
         g.setFont(small);
         switch (state) {
             case ST_MENU: paintMenu(g); break;
@@ -253,7 +252,6 @@ public class Game extends GameCanvas implements Runnable {
             case ST_DISC: paintDisc(g); break;
             case ST_GAME: paintGame(g, System.currentTimeMillis()); break;
         }
-        flushGraphics();
     }
 
     void paintMenu(Graphics g) {
