@@ -8,6 +8,9 @@ public class Game extends Canvas implements Runnable {
     static final int ST_MENU = 0, ST_WAIT = 1, ST_DISC = 2, ST_GAME = 4;
     static final int K_UP = 1, K_DOWN = 2, K_LEFT = 4, K_RIGHT = 8, K_FIRE = 16, K_SL = 32, K_SR = 64;
 
+    static final String[] SECTOR_NAMES =
+        { "HALL", "CORRIDOR", "CHAMBER", "THE BOX", "GREAT HALL" };
+
     PA app;
     Net net;
     Font small = Font.getFont(Font.FACE_SYSTEM, Font.STYLE_PLAIN, Font.SIZE_SMALL);
@@ -18,6 +21,7 @@ public class Game extends Canvas implements Runnable {
     int keys = 0, prevKeys = 0;
     boolean softL = false, softR = false, prevSoftL = false, prevSoftR = false;
     String status = "";
+    boolean solo = false;
 
     // player
     int px, py, pang, sector;
@@ -33,7 +37,7 @@ public class Game extends Canvas implements Runnable {
     boolean remoteInit = false;
     int ddx, ddy;
 
-    static final int SPAWN_X1 = 4 * 256, SPAWN_Y1 = 4 * 256;    // host
+    static final int SPAWN_X1 = 4 * 256, SPAWN_Y1 = 4 * 256;    // host / solo
     static final int SPAWN_X2 = 20 * 256, SPAWN_Y2 = 20 * 256;  // client
 
     public Game(PA app) {
@@ -49,7 +53,7 @@ public class Game extends Canvas implements Runnable {
             try {
                 update();
             } catch (Throwable e) {
-                status = "ERR " + e.toString();
+                status = "U:" + e.getClass().getName();
             }
             repaint();
             long dt = System.currentTimeMillis() - t0;
@@ -92,15 +96,17 @@ public class Game extends Canvas implements Runnable {
             status = net.error;
             state = ST_MENU;
             net.state = Net.OFF;
+            solo = false;
         }
 
         switch (state) {
             case ST_MENU: {
-                if ((pressed & K_UP) != 0) menuSel = (menuSel + 2) % 3;
-                if ((pressed & K_DOWN) != 0) menuSel = (menuSel + 1) % 3;
+                if ((pressed & K_UP) != 0) menuSel = (menuSel + 3) % 4;
+                if ((pressed & K_DOWN) != 0) menuSel = (menuSel + 1) % 4;
                 if ((pressed & K_FIRE) != 0) {
                     if (menuSel == 0) { status = ""; net.host(); state = ST_WAIT; }
                     else if (menuSel == 1) { status = ""; net.discover(); state = ST_DISC; discSel = 0; }
+                    else if (menuSel == 2) { status = ""; startSolo(); }
                     else { app.notifyDestroyed(); }
                 }
                 break;
@@ -124,8 +130,9 @@ public class Game extends Canvas implements Runnable {
             case ST_GAME: {
                 updateGame(now);
                 if (softLEdge) {
-                    net.close();
+                    if (!solo) net.close();
                     net.state = Net.OFF;
+                    solo = false;
                     state = ST_MENU;
                 }
                 break;
@@ -138,10 +145,20 @@ public class Game extends Canvas implements Runnable {
     }
 
     void startGame(boolean host) {
+        solo = false;
         if (host) { px = SPAWN_X1; py = SPAWN_Y1; pang = 0; }
         else { px = SPAWN_X2; py = SPAWN_Y2; pang = 128; }
         sector = Map.sectorAt(px, py);
         hp = 100; alive = true; myKills = 0; myDeaths = 0;
+        remoteInit = false; lastSend = 0; msg = "";
+        state = ST_GAME;
+    }
+
+    void startSolo() {
+        solo = true;
+        px = SPAWN_X1; py = SPAWN_Y1; pang = 0;
+        sector = Map.sectorAt(px, py);
+        hp = 100; alive = true;
         remoteInit = false; lastSend = 0; msg = "";
         state = ST_GAME;
     }
@@ -182,75 +199,90 @@ public class Game extends Canvas implements Runnable {
                 tryGo(px, py + my);
             }
 
-            if ((keys & K_FIRE) != 0 && now > fireReady && net.state == Net.ONLINE) {
+            if ((keys & K_FIRE) != 0 && now > fireReady && (solo || net.state == Net.ONLINE)) {
                 fireReady = now + 400;
                 muzzleUntil = now + 120;
-                net.sendState(px, py, pang, hp, 1);
-                lastSend = now;
-                int ddx = net.rx - px, ddy = net.ry - py;
-                int cos = Fx.cos(pang), sin = Fx.sin(pang);
-                int tx = (ddx * cos + ddy * sin) >> 8;
-                int ty = (ddy * cos - ddx * sin) >> 8;
-                if (tx > Render.NEAR && (ty < 0 ? -ty : ty) * 8 < tx) {
-                    if (Map.los(px, py, sector, net.rx, net.ry)) {
-                        net.sendHit(25);
-                        showMsg("HIT!");
+                if (!solo) {
+                    net.sendState(px, py, pang, hp, 1);
+                    lastSend = now;
+                    int ddx = net.rx - px, ddy = net.ry - py;
+                    int cos = Fx.cos(pang), sin = Fx.sin(pang);
+                    int tx = (ddx * cos + ddy * sin) >> 8;
+                    int ty = (ddy * cos - ddx * sin) >> 8;
+                    if (tx > Render.NEAR && (ty < 0 ? -ty : ty) * 8 < tx) {
+                        if (Map.los(px, py, sector, net.rx, net.ry)) {
+                            net.sendHit(25);
+                            showMsg("HIT!");
+                        }
                     }
                 }
             }
         }
 
-        synchronized (net) {
-            if (net.pendingDmg > 0 && alive) {
-                hp -= net.pendingDmg;
-                net.pendingDmg = 0;
-                hurtUntil = now + 200;
-                if (hp <= 0) {
-                    hp = 0; alive = false; myDeaths++;
-                    respawnAt = now + 2500;
-                    net.sendDeath();
-                    showMsg("YOU DIED");
+        if (!solo) {
+            synchronized (net) {
+                if (net.pendingDmg > 0 && alive) {
+                    hp -= net.pendingDmg;
+                    net.pendingDmg = 0;
+                    hurtUntil = now + 200;
+                    if (hp <= 0) {
+                        hp = 0; alive = false; myDeaths++;
+                        respawnAt = now + 2500;
+                        net.sendDeath();
+                        showMsg("YOU DIED");
+                    }
+                }
+                if (net.remoteDied) {
+                    net.remoteDied = false;
+                    myKills++;
+                    showMsg("ENEMY DOWN");
                 }
             }
-            if (net.remoteDied) {
-                net.remoteDied = false;
-                myKills++;
-                showMsg("ENEMY DOWN");
+
+            if (!alive && now > respawnAt) respawn();
+
+            if (now - lastSend > 100) {
+                net.sendState(px, py, pang, hp, 0);
+                lastSend = now;
             }
-        }
 
-        if (!alive && now > respawnAt) respawn();
+            if (!remoteInit && net.rlast > 0) {
+                remoteInit = true;
+                ddx = net.rx; ddy = net.ry;
+            }
+            if (remoteInit) {
+                ddx += (net.rx - ddx) >> 2;
+                ddy += (net.ry - ddy) >> 2;
+            }
 
-        if (now - lastSend > 100) {
-            net.sendState(px, py, pang, hp, 0);
-            lastSend = now;
-        }
-
-        if (!remoteInit && net.rlast > 0) {
-            remoteInit = true;
-            ddx = net.rx; ddy = net.ry;
-        }
-        if (remoteInit) {
-            ddx += (net.rx - ddx) >> 2;
-            ddy += (net.ry - ddy) >> 2;
-        }
-
-        if (net.rlast > 0 && now - net.rlast > 3000) {
-            status = "Link lost";
-            net.close();
-            net.state = Net.OFF;
-            state = ST_MENU;
+            if (net.rlast > 0 && now - net.rlast > 3000) {
+                status = "Link lost";
+                net.close();
+                net.state = Net.OFF;
+                solo = false;
+                state = ST_MENU;
+            }
         }
     }
 
     // ---------- paint ----------
     protected void paint(Graphics g) {
-        g.setFont(small);
-        switch (state) {
-            case ST_MENU: paintMenu(g); break;
-            case ST_WAIT: paintWait(g); break;
-            case ST_DISC: paintDisc(g); break;
-            case ST_GAME: paintGame(g, System.currentTimeMillis()); break;
+        try {
+            g.setFont(small);
+            switch (state) {
+                case ST_MENU: paintMenu(g); break;
+                case ST_WAIT: paintWait(g); break;
+                case ST_DISC: paintDisc(g); break;
+                case ST_GAME: paintGame(g, System.currentTimeMillis()); break;
+            }
+        } catch (Throwable t) {
+            status = "P:" + t.getClass().getName();
+            g.setColor(0x000000);
+            g.fillRect(0, 0, 240, 320);
+            g.setColor(0xFF4040);
+            g.setFont(small);
+            g.drawString("render error", 120, 150, Graphics.TOP | Graphics.HCENTER);
+            g.drawString(status, 120, 170, Graphics.TOP | Graphics.HCENTER);
         }
     }
 
@@ -259,17 +291,17 @@ public class Game extends Canvas implements Runnable {
         g.fillRect(0, 0, 240, 320);
         g.setFont(large);
         g.setColor(0xFFB020);
-        g.drawString("PORTAL", 120, 40, Graphics.TOP | Graphics.HCENTER);
+        g.drawString("PORTAL", 120, 30, Graphics.TOP | Graphics.HCENTER);
         g.setColor(0x20C0FF);
-        g.drawString("ARENA", 120, 70, Graphics.TOP | Graphics.HCENTER);
+        g.drawString("ARENA", 120, 60, Graphics.TOP | Graphics.HCENTER);
         g.setFont(small);
         g.setColor(0x808090);
-        g.drawString("bt duel  2 x nokia x2-00", 120, 110, Graphics.TOP | Graphics.HCENTER);
+        g.drawString("bt duel  2 x nokia x2-00", 120, 95, Graphics.TOP | Graphics.HCENTER);
 
-        String[] items = { "HOST GAME", "JOIN GAME", "EXIT" };
-        for (int i = 0; i < 3; i++) {
+        String[] items = { "HOST GAME", "JOIN GAME", "SOLO MODE", "EXIT" };
+        for (int i = 0; i < 4; i++) {
             g.setColor(i == menuSel ? 0xFFFF40 : 0xC0C0D0);
-            g.drawString((i == menuSel ? "> " : "  ") + items[i], 120, 160 + i * 24,
+            g.drawString((i == menuSel ? "> " : "  ") + items[i], 120, 140 + i * 24,
                          Graphics.TOP | Graphics.HCENTER);
         }
         g.setColor(0x606070);
@@ -326,7 +358,7 @@ public class Game extends Canvas implements Runnable {
     void paintGame(Graphics g, long now) {
         Render.render(this, g);
 
-        if (remoteInit && net.state == Net.ONLINE && now - net.rlast < 3000) {
+        if (!solo && remoteInit && net.state == Net.ONLINE && now - net.rlast < 3000) {
             boolean fl = false;
             synchronized (net) { fl = (net.rflags & 1) != 0 && (now - net.rlast < 250); }
             Render.sprite(this, g, ddx, ddy, fl);
@@ -353,18 +385,33 @@ public class Game extends Canvas implements Runnable {
         g.fillRect(0, 0, 240, 16);
         g.setColor(0x802020); g.fillRect(4, 5, 60, 7);
         g.setColor(0x20C040); g.fillRect(4, 5, hp * 60 / 100, 7);
-        int ehp;
-        synchronized (net) { ehp = net.rhp; }
-        g.setColor(0x802020); g.fillRect(176, 5, 60, 7);
-        g.setColor(0xC03030); g.fillRect(176, 5, ehp * 60 / 100, 7);
         g.setColor(0xFFFFFF);
         g.drawString(" " + hp, 66, 4, Graphics.TOP | Graphics.LEFT);
-        g.drawString(ehp + " ", 170, 4, Graphics.TOP | Graphics.RIGHT);
-        g.drawString(myKills + " : " + myDeaths, 120, 4, Graphics.TOP | Graphics.HCENTER);
-        g.setColor(now - net.rlast < 1500 ? 0x20FF20 : 0xFF2020);
-        g.fillRect(148, 17, 4, 4);
+        if (solo) {
+            g.drawString("SOLO", 120, 4, Graphics.TOP | Graphics.HCENTER);
+        } else {
+            int ehp;
+            synchronized (net) { ehp = net.rhp; }
+            g.setColor(0x802020); g.fillRect(176, 5, 60, 7);
+            g.setColor(0xC03030); g.fillRect(176, 5, ehp * 60 / 100, 7);
+            g.setColor(0xFFFFFF);
+            g.drawString(ehp + " ", 170, 4, Graphics.TOP | Graphics.RIGHT);
+            g.drawString(myKills + " : " + myDeaths, 120, 4, Graphics.TOP | Graphics.HCENTER);
+            g.setColor(now - net.rlast < 1500 ? 0x20FF20 : 0xFF2020);
+            g.fillRect(148, 17, 4, 4);
+        }
         g.setColor(0x606070);
-        g.drawString("soft: menu", 4, 306, Graphics.TOP | Graphics.LEFT);
+        if (solo) {
+            g.drawString(SECTOR_NAMES[sector], 120, 306, Graphics.TOP | Graphics.HCENTER);
+        } else {
+            g.drawString("soft: menu", 4, 306, Graphics.TOP | Graphics.LEFT);
+        }
+
+        // on-screen diagnostics: uncaught errors land here instead of killing the midlet
+        if (status.length() > 0) {
+            g.setColor(0xFF5050);
+            g.drawString(status, 120, 28, Graphics.TOP | Graphics.HCENTER);
+        }
 
         if (now < msgUntil) {
             g.setFont(large);

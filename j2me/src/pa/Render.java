@@ -56,6 +56,7 @@ public class Render {
 
     static void sector(Game G, Graphics g, int sec, int minx, int maxx,
                        int cx, int cy, int ca, int depth) {
+        if (sec < 0 || sec >= Map.SECTORS.length) return;
         int[] sb = Map.SECTORS[sec];
         int cos = Fx.cos(ca), sin = Fx.sin(ca);
         int ceilZ = sb[1], floorZ = sb[0];
@@ -75,15 +76,21 @@ public class Render {
             if (t1x <= NEAR && t2x <= NEAR) continue;
 
             if (t1x < NEAR) {
-                int tt = ((NEAR - t1x) << 8) / (t2x - t1x);
+                int d = t2x - t1x;
+                if (d <= 0) continue;
+                int tt = ((NEAR - t1x) << 8) / d;
                 t1y = t1y + (((t2y - t1y) * tt) >> 8);
                 t1x = NEAR;
             }
             if (t2x < NEAR) {
-                int tt = ((NEAR - t2x) << 8) / (t1x - t2x);
+                int d = t1x - t2x;
+                if (d <= 0) continue;
+                int tt = ((NEAR - t2x) << 8) / d;
                 t2y = t2y + (((t1y - t2y) * tt) >> 8);
                 t2x = NEAR;
             }
+
+            if (t1x <= 0 || t2x <= 0) continue;
 
             int sx1 = 60 + Fx.mul(t1y, Fx.FQ) / t1x;
             int sx2 = 60 + Fx.mul(t2y, Fx.FQ) / t2x;
@@ -92,6 +99,7 @@ public class Render {
             int c1 = sx1 < minx ? minx : sx1;
             int c2 = sx2 > maxx ? maxx : sx2;
             if (c1 > c2) continue;
+            if (c2 < 0 || c1 > W - 1) continue;
 
             int ceil1 = HZ + Fx.mul(EYE - ceilZ, Fx.FQ) / t1x;
             int floor1 = HZ + Fx.mul(EYE - floorZ, Fx.FQ) / t1x;
@@ -100,9 +108,10 @@ public class Render {
 
             if (w[5] >= 0) {
                 // Portal: virtual camera = double mirror (across portal line,
-                // then across paired wall line). For parallel pairs heading
-                // stays unchanged; all our portal pairs are parallel.
-                int[] pw = Map.WALLS[w[6]];
+                // then across paired wall line).
+                int pwIdx = w[6];
+                if (pwIdx < 0 || pwIdx >= Map.WALLS.length) continue;
+                int[] pw = Map.WALLS[pwIdx];
                 long dp = ((long)(cx - w[0]) * w[8] + (long)(cy - w[1]) * w[9]) >> 8;
                 int mx = cx - (int)((2 * dp * w[8]) >> 8);
                 int my = cy - (int)((2 * dp * w[9]) >> 8);
@@ -115,8 +124,11 @@ public class Render {
             }
 
             int col = w[4];
+            int span = sx2 - sx1;
+            if (span <= 0) continue;
             for (int x = c1; x <= c2; x++) {
-                int t = ((x - sx1) << 8) / (sx2 - sx1);
+                int t = ((x - sx1) << 8) / span;
+                if (t < 0) t = 0; else if (t > 256) t = 256;
                 int ceilY = lerp(ceil1, ceil2, t);
                 int floorY = lerp(floor1, floor2, t);
                 int ct = clipT[x], cb = clipB[x];
@@ -159,10 +171,12 @@ public class Render {
         int sx = 60 + Fx.mul(ty, Fx.FQ) / tx;
         int w = Fx.mul(48, Fx.FQ) / tx;
         if (w < 1) w = 1;
+        if (w > 60) w = 60;
         int top = HZ + Fx.mul(EYE - 440, Fx.FQ) / tx;
         int bot = HZ + Fx.mul(EYE, Fx.FQ) / tx;
         if (top < 0) top = 0;
         if (bot > H - 1) bot = H - 1;
+        if (bot <= top) return;
         int x1 = sx - w, x2 = sx + w;
         if (x1 < 0) x1 = 0;
         if (x2 > W - 1) x2 = W - 1;
